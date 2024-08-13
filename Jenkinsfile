@@ -1,100 +1,47 @@
-def COLOR_MAP = [
-    'SUCCESS': 'good', 
-    'FAILURE': 'danger',
-]
 pipeline {
     agent any
-    tools {
-	    maven "MAVEN3"
-	    jdk "OracleJDK8"
-	}
-
-    stages{
-        stage('Fetch code') {
-          steps{
-              git branch: 'vp-rem', url:'https://github.com/devopshydclub/vprofile-repo.git'
-          }  
-        }
-
-        stage('Build') {
-            steps {
-                sh 'mvn clean install -DskipTests'
-            }
-            post {
-                success {
-                    echo "Now Archiving."
-                    archiveArtifacts artifacts: '**/*.war'
-                }
-            }
-        }
-        stage('Test'){
-            steps {
-                sh 'mvn test'
-            }
-
-        }
-
-        stage('Checkstyle Analysis'){
-            steps {
-                sh 'mvn checkstyle:checkstyle'
-            }
-        }
-
-        stage('Sonar Analysis') {
-            environment {
-                scannerHome = tool 'sonar4.7'
-            }
-            steps {
-               withSonarQubeEnv('sonar') {
-                   sh '''${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=vprofile \
-                   -Dsonar.projectName=vprofile \
-                   -Dsonar.projectVersion=1.0 \
-                   -Dsonar.sources=src/ \
-                   -Dsonar.java.binaries=target/test-classes/com/visualpathit/account/controllerTest/ \
-                   -Dsonar.junit.reportsPath=target/surefire-reports/ \
-                   -Dsonar.jacoco.reportsPath=target/jacoco.exec \
-                   -Dsonar.java.checkstyle.reportPaths=target/checkstyle-result.xml'''
-              }
-            }
-        }
-
-        stage("Quality Gate") {
-            steps {
-                timeout(time: 1, unit: 'HOURS') {
-                    // Parameter indicates whether to set pipeline to UNSTABLE if Quality Gate fails
-                    // true = set pipeline to UNSTABLE, false = don't
-                    waitForQualityGate abortPipeline: true
-                }
-            }
-        }
-
-        stage("UploadArtifact"){
-            steps{
-                nexusArtifactUploader(
-                  nexusVersion: 'nexus3',
-                  protocol: 'http',
-                  nexusUrl: '172.16.18.116:8081',
-                  groupId: 'QA',
-                  version: "${env.BUILD_ID}-${env.BUILD_TIMESTAMP}",
-                  repository: 'vprofile-repo',
-                  credentialsId: 'nexuslogin',
-                  artifacts: [
-                    [artifactId: 'vproapp',
-                     classifier: '',
-                     file: 'target/vprofile-v2.war',
-                     type: 'war']
-                  ]
-                )
-            }
-        }
+    
+    environment {
+        // Set Docker Hub credentials
+        DOCKER_CREDENTIALS_ID = 'docker-hub'
+        DOCKER_IMAGE_NAME = 'kishanchauhan55/test-cicd-timstamp'
     }
-    post {
-        always {
-            echo 'Slack Notifications.'
-            slackSend channel: '#jenkinscicdnew',
-                color: COLOR_MAP[currentBuild.currentResult],
-                message: "*${currentBuild.currentResult}:* Job ${env.JOB_NAME} build ${env.BUILD_NUMBER} \n More info at: ${env.BUILD_URL}"
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                // Checkout the code from the repository
+                checkout scm
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    // Build the Docker image
+                    docker.build("${env.DOCKER_IMAGE_NAME}:${env.BUILD_ID}")
+                }
+            }
+        }
+        
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    // Login to Docker Hub
+                    docker.withRegistry('https://index.docker.io/v1/', "${env.DOCKER_CREDENTIALS_ID}") {
+                        // Push the Docker image
+                        docker.image("${env.DOCKER_IMAGE_NAME}:${env.BUILD_ID}").push('latest')
+                        docker.image("${env.DOCKER_IMAGE_NAME}:${env.BUILD_ID}").push("${env.BUILD_ID}")
+                    }
+                }
+            }
         }
     }
     
+    post {
+        always {
+            // Clean up Docker images
+            sh 'docker system prune -af'
+        }
+    }
 }
